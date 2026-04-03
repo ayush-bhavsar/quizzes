@@ -257,6 +257,10 @@ h1 {
   box-shadow: 0 0 0 4px rgba(120, 213, 255, 0.14);
 }
 
+.file-input {
+  display: none;
+}
+
 .prompt-input {
   resize: vertical;
   min-height: 88px;
