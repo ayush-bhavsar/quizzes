@@ -39,6 +39,8 @@ type QuizBuildResult = {
   error: string;
 };
 
+type PatternSelection = Record<QuestionType, boolean>;
+
 const importedHeaders = {
   prompt: ['prompt', 'question', 'quiz question', 'question prompt'],
   type: ['type', 'question type', 'kind'],
@@ -79,6 +81,10 @@ const getRowValue = (row: ImportRow, aliases: string[]) => {
 
 const parseQuestionType = (value: unknown): QuestionType => {
   const normalized = normalizeAnswer(toText(value));
+
+  if (normalized === 'multiplechoice' || normalized === 'multiple-choice' || normalized === 'multiple choice' || normalized === 'mcq') {
+    return 'multiple-choice';
+  }
 
   if (normalized === 'fillup' || normalized === 'fill-up' || normalized === 'fill up' || normalized === 'blank' || normalized === 'short answer') {
     return 'fill-up';
@@ -320,6 +326,27 @@ const resetQuestionByType = (question: QuestionDraft, type: QuestionType): Quest
   };
 };
 
+const defaultPatternSelection: PatternSelection = {
+  'multiple-choice': true,
+  'fill-up': true,
+  'true-false': true,
+};
+
+const applyPatternFilter = (draftQuestions: QuestionDraft[], patternSelection: PatternSelection) =>
+  draftQuestions.filter((question) => patternSelection[question.type]);
+
+const parseQuestionsFromWorkbook = (workbook: XLSX.WorkBook) => {
+  const sheetName = workbook.SheetNames[0];
+
+  if (!sheetName) {
+    return [];
+  }
+
+  const worksheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json<ImportRow>(worksheet, { defval: '' });
+  return rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
+};
+
 function App() {
   const [questions, setQuestions] = useState<QuestionDraft[]>([createBlankQuestion()]);
   const [phase, setPhase] = useState<Phase>('builder');
@@ -330,6 +357,8 @@ function App() {
   const [results, setResults] = useState<ResultEntry[]>([]);
   const [error, setError] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [bulkInput, setBulkInput] = useState('');
+  const [patternSelection, setPatternSelection] = useState<PatternSelection>(defaultPatternSelection);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentQuestion = quiz[currentIndex];
@@ -370,7 +399,19 @@ function App() {
   };
 
   const startQuiz = (draftQuestions: QuestionDraft[] = questions) => {
-    const result = createQuizFromQuestions(draftQuestions);
+    const filteredQuestions = applyPatternFilter(draftQuestions, patternSelection);
+
+    if (!Object.values(patternSelection).some(Boolean)) {
+      setError('Select at least one question pattern before generating the quiz.');
+      return;
+    }
+
+    if (!filteredQuestions.length) {
+      setError('No questions match the selected pattern. Enable more patterns or add matching questions.');
+      return;
+    }
+
+    const result = createQuizFromQuestions(filteredQuestions);
 
     if (result.error) {
       setError(result.error);
@@ -390,6 +431,35 @@ function App() {
     fileInputRef.current?.click();
   };
 
+  const togglePattern = (type: QuestionType) => {
+    setPatternSelection((currentSelection) => ({
+      ...currentSelection,
+      [type]: !currentSelection[type],
+    }));
+  };
+
+  const importQuizFromText = () => {
+    if (!bulkInput.trim()) {
+      setError('Paste CSV text before generating a quiz from text input.');
+      return;
+    }
+
+    try {
+      const workbook = XLSX.read(bulkInput, { type: 'string' });
+      const importedQuestions = parseQuestionsFromWorkbook(workbook);
+
+      if (!importedQuestions.length) {
+        setError('No valid questions were found in the pasted text. Check headers and row values.');
+        return;
+      }
+
+      setQuestions(importedQuestions);
+      startQuiz(importedQuestions);
+    } catch {
+      setError('Could not parse the pasted text. Keep the CSV header and values in a table format.');
+    }
+  };
+
   const importQuizFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -405,16 +475,7 @@ function App() {
       const workbook = isCsv
         ? XLSX.read(await file.text(), { type: 'string' })
         : XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-
-      if (!sheetName) {
-        setError('The selected file does not contain any readable sheets or rows.');
-        return;
-      }
-
-      const worksheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json<ImportRow>(worksheet, { defval: '' });
-      const importedQuestions = rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
+      const importedQuestions = parseQuestionsFromWorkbook(workbook);
 
       if (!importedQuestions.length) {
         setError('No valid questions were found. Make sure your file includes prompt and answer columns.');
@@ -520,6 +581,30 @@ function App() {
               <button className="secondary-button" onClick={() => startQuiz()} type="button">
                 Generate quiz
               </button>
+            </div>
+
+            <div className="bulk-entry-card">
+              <label className="field-label" htmlFor="bulk-quiz-input">
+                Paste CSV text (prompt, type, option1 to option4, correctAnswer, correctIndex)
+              </label>
+              <textarea
+                id="bulk-quiz-input"
+                className="text-input bulk-textarea"
+                placeholder={
+                  'prompt,type,option1,option2,option3,option4,correctAnswer,correctIndex\nWhich planet is called the Red Planet?,multiple-choice,Earth,Mars,Jupiter,Venus,Mars,\nThe largest ocean is the ____ Ocean.,fill-up,,,,,Pacific,\nThe earth is flat.,true-false,,,,,False,'
+                }
+                value={bulkInput}
+                onChange={(event) => setBulkInput(event.target.value)}
+                rows={6}
+              />
+              <div className="bulk-actions">
+                <button className="secondary-button" onClick={importQuizFromText} type="button">
+                  Generate from text
+                </button>
+                <button className="ghost-button" onClick={() => setBulkInput('')} type="button">
+                  Clear text
+                </button>
+              </div>
             </div>
 
             <div className="question-list">
@@ -642,6 +727,33 @@ function App() {
               <p>
                 Generated quizzes are shuffled on launch, scored automatically, and shown with a final review screen.
               </p>
+              <p className="field-label">Pattern selector</p>
+              <div className="pattern-grid" role="group" aria-label="Quiz pattern selector">
+                <label className="pattern-chip">
+                  <input
+                    type="checkbox"
+                    checked={patternSelection['multiple-choice']}
+                    onChange={() => togglePattern('multiple-choice')}
+                  />
+                  <span>MCQ</span>
+                </label>
+                <label className="pattern-chip">
+                  <input
+                    type="checkbox"
+                    checked={patternSelection['fill-up']}
+                    onChange={() => togglePattern('fill-up')}
+                  />
+                  <span>Fill ups</span>
+                </label>
+                <label className="pattern-chip">
+                  <input
+                    type="checkbox"
+                    checked={patternSelection['true-false']}
+                    onChange={() => togglePattern('true-false')}
+                  />
+                  <span>True / False</span>
+                </label>
+              </div>
               <ul>
                 <li>One question at a time</li>
                 <li>Instant score tracking</li>

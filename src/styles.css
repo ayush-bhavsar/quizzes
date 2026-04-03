@@ -223,6 +223,26 @@ h1 {
   gap: 16px;
 }
 
+.bulk-entry-card {
+  margin-bottom: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 20, 36, 0.75);
+}
+
+.bulk-textarea {
+  margin-bottom: 12px;
+  min-height: 132px;
+  resize: vertical;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .question-card {
   padding: 18px;
 }
@@ -312,6 +332,27 @@ h1 {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.92rem;
+}
+
+.pattern-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pattern-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.pattern-chip input {
+  accent-color: var(--accent);
 }
 
 .option-input:disabled {
