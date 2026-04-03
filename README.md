@@ -1,4 +1,4 @@
-# Quiz Forge
+# quizzes
 
 A Vite + React + TypeScript app for building a quiz from your own questions.
 

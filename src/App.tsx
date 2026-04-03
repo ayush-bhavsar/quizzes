@@ -198,7 +198,7 @@ function App() {
     <main className="app-shell">
       <section className="hero-panel">
         <div className="hero-copy">
-          <p className="eyebrow">Quiz Forge</p>
+          <p className="eyebrow">quizzes</p>
           <h1>Turn your questions into a playable quiz in seconds.</h1>
           <p className="hero-description">
             Add your questions, mark the correct answer, and generate an interactive quiz with scoring and review.
