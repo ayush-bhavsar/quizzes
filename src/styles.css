@@ -263,6 +263,18 @@ h1 {
   margin-bottom: 14px;
 }
 
+.question-type-row,
+.fillup-section,
+.fillup-answer {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.type-input {
+  appearance: none;
+}
+
 .options-grid {
   display: grid;
   gap: 12px;
@@ -290,6 +302,16 @@ h1 {
   color: var(--accent);
   font-size: 0.85rem;
   font-weight: 700;
+}
+
+.type-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
+.option-input:disabled {
+  opacity: 0.8;
 }
 
 .preview-panel {
@@ -412,6 +434,14 @@ h1 {
 .review-card span {
   color: #ffffff;
   font-weight: 700;
+}
+
+.review-type {
+  margin-bottom: 6px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.74rem;
 }
 
 @media (max-width: 960px) {

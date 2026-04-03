@@ -1,14 +1,19 @@
 import { useMemo, useState } from 'react';
 
+type QuestionType = 'multiple-choice' | 'fill-up' | 'true-false';
+
 type QuestionDraft = {
   id: string;
+  type: QuestionType;
   prompt: string;
   options: [string, string, string, string];
   correctIndex: number;
+  correctText: string;
 };
 
 type QuizQuestion = {
   id: string;
+  type: QuestionType;
   prompt: string;
   options: string[];
   correctAnswer: string;
@@ -16,6 +21,7 @@ type QuizQuestion = {
 
 type ResultEntry = {
   questionId: string;
+  type: QuestionType;
   prompt: string;
   chosen: string;
   correct: string;
@@ -26,36 +32,39 @@ type Phase = 'builder' | 'quiz' | 'summary';
 
 const makeId = () => crypto.randomUUID();
 
-const createBlankQuestion = (): QuestionDraft => ({
+const createBlankQuestion = (type: QuestionType = 'multiple-choice'): QuestionDraft => ({
   id: makeId(),
+  type,
   prompt: '',
   options: ['', '', '', ''],
   correctIndex: 0,
+  correctText: '',
 });
 
 const createSampleQuestions = (): QuestionDraft[] => [
   {
     id: makeId(),
+    type: 'multiple-choice',
     prompt: 'Which planet is known as the Red Planet?',
     options: ['Earth', 'Mars', 'Saturn', 'Venus'],
     correctIndex: 1,
+    correctText: '',
   },
   {
     id: makeId(),
-    prompt: 'What does HTML stand for?',
-    options: [
-      'HyperText Markup Language',
-      'High Transfer Machine Language',
-      'Hyperlink and Text Management Language',
-      'Home Tool Markup Language',
-    ],
+    type: 'fill-up',
+    prompt: 'The largest ocean on Earth is the ____ Ocean.',
+    options: ['', '', '', ''],
     correctIndex: 0,
+    correctText: 'Pacific',
   },
   {
     id: makeId(),
-    prompt: 'How many continents are there on Earth?',
-    options: ['Five', 'Six', 'Seven', 'Eight'],
-    correctIndex: 2,
+    type: 'true-false',
+    prompt: 'The Earth is flat.',
+    options: ['True', 'False', '', ''],
+    correctIndex: 1,
+    correctText: '',
   },
 ];
 
@@ -71,10 +80,44 @@ const shuffle = <T,>(items: T[]): T[] => {
 };
 
 const normalizeQuestion = (question: QuestionDraft) => ({
+  type: question.type,
   prompt: question.prompt.trim(),
   options: question.options.map((option) => option.trim()),
   correctIndex: question.correctIndex,
+  correctText: question.correctText.trim(),
 });
+
+const normalizeAnswer = (value: string) => value.trim().toLowerCase();
+
+const resetQuestionByType = (question: QuestionDraft, type: QuestionType): QuestionDraft => {
+  if (type === 'fill-up') {
+    return {
+      ...question,
+      type,
+      options: ['', '', '', ''],
+      correctIndex: 0,
+      correctText: '',
+    };
+  }
+
+  if (type === 'true-false') {
+    return {
+      ...question,
+      type,
+      options: ['True', 'False', '', ''],
+      correctIndex: 0,
+      correctText: '',
+    };
+  }
+
+  return {
+    ...question,
+    type,
+    options: ['', '', '', ''],
+    correctIndex: 0,
+    correctText: '',
+  };
+};
 
 function App() {
   const [questions, setQuestions] = useState<QuestionDraft[]>([createBlankQuestion()]);
@@ -97,6 +140,10 @@ function App() {
 
   const updateQuestion = (questionId: string, updater: (question: QuestionDraft) => QuestionDraft) => {
     setQuestions((currentQuestions) => currentQuestions.map((question) => (question.id === questionId ? updater(question) : question)));
+  };
+
+  const changeQuestionType = (questionId: string, type: QuestionType) => {
+    updateQuestion(questionId, (question) => resetQuestionByType(question, type));
   };
 
   const addQuestion = () => {
@@ -122,7 +169,19 @@ function App() {
   const startQuiz = () => {
     const invalidQuestion = questions.find((question) => {
       const normalized = normalizeQuestion(question);
-      return !normalized.prompt || normalized.options.some((option) => !option);
+      if (!normalized.prompt) {
+        return true;
+      }
+
+      if (normalized.type === 'fill-up') {
+        return !normalized.correctText;
+      }
+
+      if (normalized.type === 'true-false') {
+        return normalized.correctIndex !== 0 && normalized.correctIndex !== 1;
+      }
+
+      return normalized.options.some((option) => !option);
     });
 
     if (!readyQuestions.length) {
@@ -131,19 +190,25 @@ function App() {
     }
 
     if (invalidQuestion) {
-      setError('Fill in every question prompt and all four answer options before generating the quiz.');
+      setError('Fill in every question prompt and the required answer fields for each question type before generating the quiz.');
       return;
     }
 
     const generatedQuiz = shuffle(
       questions.map((question) => {
         const normalized = normalizeQuestion(question);
-        const correctAnswer = normalized.options[normalized.correctIndex];
+        const correctAnswer = normalized.type === 'fill-up' ? normalized.correctText : normalized.options[normalized.correctIndex];
 
         return {
           id: question.id,
+          type: normalized.type,
           prompt: normalized.prompt,
-          options: shuffle(normalized.options),
+          options:
+            normalized.type === 'fill-up'
+              ? []
+              : normalized.type === 'true-false'
+                ? shuffle(['True', 'False'])
+                : shuffle(normalized.options),
           correctAnswer,
         };
       }),
@@ -163,9 +228,10 @@ function App() {
       return;
     }
 
-    const isCorrect = selectedAnswer === currentQuestion.correctAnswer;
+    const isCorrect = normalizeAnswer(selectedAnswer) === normalizeAnswer(currentQuestion.correctAnswer);
     const entry: ResultEntry = {
       questionId: currentQuestion.id,
+      type: currentQuestion.type,
       prompt: currentQuestion.prompt,
       chosen: selectedAnswer,
       correct: currentQuestion.correctAnswer,
@@ -275,40 +341,80 @@ function App() {
                     rows={3}
                   />
 
-                  <div className="options-grid">
-                    {question.options.map((option, optionIndex) => (
-                      <label className="option-row" key={`${question.id}-${optionIndex}`}>
-                        <input
-                          checked={question.correctIndex === optionIndex}
-                          className="option-radio"
-                          name={`correct-${question.id}`}
-                          onChange={() =>
-                            updateQuestion(question.id, (currentQuestion) => ({
-                              ...currentQuestion,
-                              correctIndex: optionIndex,
-                            }))
-                          }
-                          type="radio"
-                        />
-                        <span className="option-number">{optionIndex + 1}</span>
-                        <input
-                          className="text-input option-input"
-                          placeholder={`Answer option ${optionIndex + 1}`}
-                          value={option}
-                          onChange={(event) =>
-                            updateQuestion(question.id, (currentQuestion) => {
-                              const nextOptions = [...currentQuestion.options] as [string, string, string, string];
-                              nextOptions[optionIndex] = event.target.value;
-                              return {
-                                ...currentQuestion,
-                                options: nextOptions,
-                              };
-                            })
-                          }
-                        />
-                      </label>
-                    ))}
+                  <div className="question-type-row">
+                    <label className="field-label" htmlFor={`type-${question.id}`}>
+                      Question type
+                    </label>
+                    <select
+                      id={`type-${question.id}`}
+                      className="text-input type-input"
+                      value={question.type}
+                      onChange={(event) => changeQuestionType(question.id, event.target.value as QuestionType)}
+                    >
+                      <option value="multiple-choice">Multiple choice</option>
+                      <option value="fill-up">Fill up</option>
+                      <option value="true-false">True / false</option>
+                    </select>
                   </div>
+
+                  {question.type === 'fill-up' ? (
+                    <div className="fillup-section">
+                      <label className="field-label" htmlFor={`fill-${question.id}`}>
+                        Correct answer
+                      </label>
+                      <input
+                        id={`fill-${question.id}`}
+                        className="text-input"
+                        placeholder="Type the accepted answer"
+                        value={question.correctText}
+                        onChange={(event) =>
+                          updateQuestion(question.id, (currentQuestion) => ({
+                            ...currentQuestion,
+                            correctText: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div className="options-grid">
+                      {(question.type === 'true-false' ? question.options.slice(0, 2) : question.options).map((option, optionIndex) => (
+                        <label className="option-row" key={`${question.id}-${optionIndex}`}>
+                          <input
+                            checked={question.correctIndex === optionIndex}
+                            className="option-radio"
+                            name={`correct-${question.id}`}
+                            onChange={() =>
+                              updateQuestion(question.id, (currentQuestion) => ({
+                                ...currentQuestion,
+                                correctIndex: optionIndex,
+                              }))
+                            }
+                            type="radio"
+                          />
+                          <span className="option-number">{optionIndex + 1}</span>
+                          <input
+                            className="text-input option-input"
+                            disabled={question.type === 'true-false'}
+                            placeholder={question.type === 'true-false' ? (optionIndex === 0 ? 'True' : 'False') : `Answer option ${optionIndex + 1}`}
+                            value={option}
+                            onChange={(event) =>
+                              question.type === 'true-false'
+                                ? undefined
+                                : updateQuestion(question.id, (currentQuestion) => {
+                                    const nextOptions = [...currentQuestion.options] as [string, string, string, string];
+                                    nextOptions[optionIndex] = event.target.value;
+                                    return {
+                                      ...currentQuestion,
+                                      options: nextOptions,
+                                    };
+                                  })
+                            }
+                          />
+                        </label>
+                      ))}
+                      {question.type === 'true-false' ? <p className="type-note">True / false questions use the fixed choices above.</p> : null}
+                    </div>
+                  )}
                 </article>
               ))}
             </div>
@@ -367,18 +473,33 @@ function App() {
 
           <article className="quiz-card">
             <h3>{currentQuestion.prompt}</h3>
-            <div className="answer-grid">
-              {currentQuestion.options.map((option) => (
-                <button
-                  className={`answer-button ${selectedAnswer === option ? 'selected' : ''}`}
-                  key={`${currentQuestion.id}-${option}`}
-                  onClick={() => setSelectedAnswer(option)}
-                  type="button"
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
+            {currentQuestion.type === 'fill-up' ? (
+              <div className="fillup-answer">
+                <label className="field-label" htmlFor={`answer-${currentQuestion.id}`}>
+                  Your answer
+                </label>
+                <input
+                  id={`answer-${currentQuestion.id}`}
+                  className="text-input"
+                  placeholder="Type your answer"
+                  value={selectedAnswer}
+                  onChange={(event) => setSelectedAnswer(event.target.value)}
+                />
+              </div>
+            ) : (
+              <div className="answer-grid">
+                {currentQuestion.options.map((option) => (
+                  <button
+                    className={`answer-button ${selectedAnswer === option ? 'selected' : ''}`}
+                    key={`${currentQuestion.id}-${option}`}
+                    onClick={() => setSelectedAnswer(option)}
+                    type="button"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            )}
           </article>
 
           <div className="quiz-actions">
@@ -425,6 +546,7 @@ function App() {
                   <p>Question {index + 1}</p>
                   <strong>{result.isCorrect ? 'Correct' : 'Wrong'}</strong>
                 </div>
+                <p className="review-type">{result.type === 'fill-up' ? 'Fill up' : result.type === 'true-false' ? 'True / false' : 'Multiple choice'}</p>
                 <h3>{result.prompt}</h3>
                 <p>
                   Your answer: <span>{result.chosen}</span>
