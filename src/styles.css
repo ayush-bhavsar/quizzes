@@ -231,9 +231,24 @@ h1 {
   background: rgba(10, 20, 36, 0.75);
 }
 
+.ai-entry-card {
+  margin-bottom: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(120, 213, 255, 0.24);
+  background: linear-gradient(160deg, rgba(11, 22, 40, 0.88), rgba(8, 18, 34, 0.7));
+  display: grid;
+  gap: 10px;
+}
+
 .bulk-textarea {
   margin-bottom: 12px;
   min-height: 132px;
+  resize: vertical;
+}
+
+.gemini-textarea {
+  min-height: 120px;
   resize: vertical;
 }
 

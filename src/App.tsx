@@ -41,6 +41,21 @@ type QuizBuildResult = {
 
 type PatternSelection = Record<QuestionType, boolean>;
 
+type GeminiApiResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+const GEMINI_KEY_STORAGE = 'quizzes.geminiApiKey';
+
 const importedHeaders = {
   prompt: ['prompt', 'question', 'quiz question', 'question prompt'],
   type: ['type', 'question type', 'kind'],
@@ -347,6 +362,52 @@ const parseQuestionsFromWorkbook = (workbook: XLSX.WorkBook) => {
   return rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
 };
 
+const parseQuestionsFromRows = (rows: ImportRow[]) =>
+  rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
+
+const extractJsonSegment = (value: string) => {
+  const fencedMatch = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const arrayStart = value.indexOf('[');
+  const arrayEnd = value.lastIndexOf(']');
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    return value.slice(arrayStart, arrayEnd + 1);
+  }
+
+  const objectStart = value.indexOf('{');
+  const objectEnd = value.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    return value.slice(objectStart, objectEnd + 1);
+  }
+
+  return value.trim();
+};
+
+const parseQuestionsFromGeminiText = (value: string) => {
+  const json = extractJsonSegment(value);
+  try {
+    const parsed = JSON.parse(json) as unknown;
+
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { questions?: unknown }).questions)
+        ? ((parsed as { questions: unknown[] }).questions)
+        : [];
+
+    return parseQuestionsFromRows(rows.filter((item): item is ImportRow => Boolean(item && typeof item === 'object')));
+  } catch {
+    try {
+      const workbook = XLSX.read(value, { type: 'string' });
+      return parseQuestionsFromWorkbook(workbook);
+    } catch {
+      return [];
+    }
+  }
+};
+
 function App() {
   const [questions, setQuestions] = useState<QuestionDraft[]>([createBlankQuestion()]);
   const [phase, setPhase] = useState<Phase>('builder');
@@ -359,6 +420,15 @@ function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
   const [patternSelection, setPatternSelection] = useState<PatternSelection>(defaultPatternSelection);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    if (typeof window === 'undefined') {
+      return '';
+    }
+
+    return window.localStorage.getItem(GEMINI_KEY_STORAGE) ?? '';
+  });
+  const [geminiPrompt, setGeminiPrompt] = useState('');
+  const [isGeneratingWithGemini, setIsGeneratingWithGemini] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentQuestion = quiz[currentIndex];
@@ -491,6 +561,104 @@ function App() {
     }
   };
 
+  const updateGeminiApiKey = (value: string) => {
+    setGeminiApiKey(value);
+
+    if (typeof window !== 'undefined') {
+      if (value.trim()) {
+        window.localStorage.setItem(GEMINI_KEY_STORAGE, value.trim());
+      } else {
+        window.localStorage.removeItem(GEMINI_KEY_STORAGE);
+      }
+    }
+  };
+
+  const generateQuizFromGemini = async () => {
+    if (!geminiApiKey.trim()) {
+      setError('Add your Gemini API key before generating quiz questions.');
+      return;
+    }
+
+    if (!geminiPrompt.trim()) {
+      setError('Paste your raw questions before using Gemini formatting.');
+      return;
+    }
+
+    setIsGeneratingWithGemini(true);
+
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(geminiApiKey.trim())}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: [
+                      'You are a quiz formatter.',
+                      'Convert ONLY the user-provided questions into quiz rows. Do not create new questions.',
+                      'Return JSON only with either an array of objects or {"questions": []}.',
+                      'Allowed types: multiple-choice, fill-up, true-false.',
+                      'Each object should use fields: prompt, type, option1, option2, option3, option4, correctAnswer, correctIndex.',
+                      'Infer type from the user text: MCQ with choices => multiple-choice, true/false statements => true-false, otherwise fill-up.',
+                      'For true-false, use correctAnswer as True or False.',
+                      'For fill-up, provide prompt and correctAnswer.',
+                      'Extract answers from markers like Answer:, Correct:, Ans:, ->, or inline answer hints when present.',
+                      'If a question has no reliable answer, skip that question instead of guessing.',
+                      'Do not include markdown, comments, or extra keys.',
+                      `User input: ${geminiPrompt}`,
+                    ].join('\n'),
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+
+      const payload = (await response.json()) as GeminiApiResponse;
+
+      if (!response.ok) {
+        const message = payload.error?.message ?? 'Gemini request failed. Check your API key and try again.';
+        setError(message);
+        return;
+      }
+
+      const modelText =
+        payload.candidates
+          ?.flatMap((candidate) => candidate.content?.parts ?? [])
+          .map((part) => part.text ?? '')
+          .join('\n')
+          .trim() ?? '';
+
+      if (!modelText) {
+        setError('Gemini returned an empty response. Please try with more detailed quiz text.');
+        return;
+      }
+
+      const generatedQuestions = parseQuestionsFromGeminiText(modelText);
+
+      if (!generatedQuestions.length) {
+        setError('Could not extract valid questions from your text. Include clear answers like "Answer: ..." for each question and try again.');
+        return;
+      }
+
+      setQuestions(generatedQuestions);
+      setBulkInput('');
+      setError('');
+      startQuiz(generatedQuestions);
+    } catch {
+      setError('Could not generate questions with Gemini. Check network access and response format.');
+    } finally {
+      setIsGeneratingWithGemini(false);
+    }
+  };
+
   const submitAnswer = () => {
     if (!currentQuestion || !selectedAnswer) {
       return;
@@ -605,6 +773,44 @@ function App() {
                   Clear text
                 </button>
               </div>
+            </div>
+
+            <div className="ai-entry-card">
+              <label className="field-label" htmlFor="gemini-api-key">
+                Gemini API key
+              </label>
+              <input
+                id="gemini-api-key"
+                className="text-input"
+                type="password"
+                placeholder="Paste your Gemini API key"
+                value={geminiApiKey}
+                onChange={(event) => updateGeminiApiKey(event.target.value)}
+              />
+
+              <label className="field-label" htmlFor="gemini-quiz-text">
+                Paste your questions (any pattern)
+              </label>
+              <textarea
+                id="gemini-quiz-text"
+                className="text-input gemini-textarea"
+                rows={5}
+                placeholder={
+                  'Example:\n1) Which planet is called the Red Planet?\nA) Earth B) Mars C) Jupiter D) Venus\nAnswer: Mars\n\n2) The largest ocean is the ____ Ocean.\nAns: Pacific\n\n3) The earth is flat. True or False\nCorrect: False'
+                }
+                value={geminiPrompt}
+                onChange={(event) => setGeminiPrompt(event.target.value)}
+              />
+
+              <div className="bulk-actions">
+                <button className="secondary-button" onClick={() => void generateQuizFromGemini()} type="button" disabled={isGeneratingWithGemini}>
+                  {isGeneratingWithGemini ? 'Formatting...' : 'Format questions with Gemini'}
+                </button>
+                <button className="ghost-button" onClick={() => setGeminiPrompt('')} type="button">
+                  Clear Gemini text
+                </button>
+              </div>
+              <p className="type-note">Gemini is used to map your raw question text into the required quiz structure. Your API key is saved only in browser local storage.</p>
             </div>
 
             <div className="question-list">
