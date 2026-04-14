@@ -528,6 +528,20 @@ function App() {
     [questions],
   );
 
+  const livePreviewQuestions = useMemo(() => readyQuestions.slice(0, 8), [readyQuestions]);
+
+  const modeLabelMap: Record<InputMode, string> = {
+    manual: 'Manual build',
+    csv: 'CSV import',
+    'gemini-file': 'Gemini photo/PDF',
+  };
+
+  const modeDescriptionMap: Record<InputMode, string> = {
+    manual: 'Frame questions one by one with full control over type and answer keys.',
+    csv: 'Bulk-load structured quizzes from CSV/XLSX data and launch quickly.',
+    'gemini-file': 'Extract questions from uploaded notes, worksheets, photos, or PDFs.',
+  };
+
   const updateQuestion = (questionId: string, updater: (question: QuestionDraft) => QuestionDraft) => {
     setQuestions((currentQuestions) => currentQuestions.map((question) => (question.id === questionId ? updater(question) : question)));
   };
@@ -828,8 +842,8 @@ function App() {
       {error ? <p className="error-banner">{error}</p> : null}
 
       {phase === 'builder' ? (
-        <section className="content-grid">
-          <div className="panel builder-panel">
+        <section className="content-grid split-pane">
+          <div className="panel builder-panel split-pane-main">
             <div className="panel-header">
               <div>
                 <p className="panel-kicker">Question editor</p>
@@ -1036,12 +1050,58 @@ function App() {
             ) : null}
           </div>
 
-          <aside className="panel preview-panel">
+          <aside className="panel preview-panel split-pane-side">
             <div className="panel-header">
               <div>
-                <p className="panel-kicker">Preview</p>
-                <h2>What the quiz will do</h2>
+                <p className="panel-kicker">Live workspace</p>
+                <h2>Preview and stats</h2>
               </div>
+            </div>
+
+            <div className="preview-card">
+              <p className="field-label">Current mode</p>
+              <h3>{modeLabelMap[inputMode]}</h3>
+              <p>{modeDescriptionMap[inputMode]}</p>
+            </div>
+
+            <div className="preview-card live-stat-grid" aria-label="Live quiz statistics">
+              <article className="preview-stat-item">
+                <span>Draft questions</span>
+                <strong>{questions.length}</strong>
+              </article>
+              <article className="preview-stat-item">
+                <span>Ready prompts</span>
+                <strong>{readyQuestions.length}</strong>
+              </article>
+              <article className="preview-stat-item">
+                <span>MCQ / Fill / T-F</span>
+                <strong>
+                  {questions.filter((question) => question.type === 'multiple-choice').length}/
+                  {questions.filter((question) => question.type === 'fill-up').length}/
+                  {questions.filter((question) => question.type === 'true-false').length}
+                </strong>
+              </article>
+            </div>
+
+            <div className="preview-card">
+              <p className="field-label">Live quiz preview</p>
+              {livePreviewQuestions.length ? (
+                <div className="live-preview-list">
+                  {livePreviewQuestions.map((question, index) => (
+                    <article className="live-preview-item" key={`${question.id}-${index}`}>
+                      <p className="live-preview-meta">
+                        #{index + 1} • {question.type === 'fill-up' ? 'Fill up' : question.type === 'true-false' ? 'True / False' : 'Multiple choice'}
+                      </p>
+                      <p className="live-preview-prompt">{question.prompt}</p>
+                    </article>
+                  ))}
+                  {readyQuestions.length > livePreviewQuestions.length ? (
+                    <p className="type-note">+{readyQuestions.length - livePreviewQuestions.length} more ready questions</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="type-note">No ready questions yet. Add prompts on the left to see the live quiz list here.</p>
+              )}
             </div>
 
             <div className="preview-card">
