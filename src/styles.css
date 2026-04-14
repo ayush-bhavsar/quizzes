@@ -1,26 +1,26 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #f5f7fb;
+  color: #1d2430;
   background:
-    radial-gradient(circle at top left, rgba(84, 125, 255, 0.25), transparent 34%),
-    radial-gradient(circle at top right, rgba(255, 133, 102, 0.18), transparent 28%),
-    linear-gradient(180deg, #08111f 0%, #0b1629 45%, #07101c 100%);
+    radial-gradient(circle at top left, rgba(255, 214, 170, 0.5), transparent 30%),
+    radial-gradient(circle at top right, rgba(196, 229, 255, 0.45), transparent 28%),
+    linear-gradient(180deg, #fffaf2 0%, #f6efe3 45%, #efe4d4 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --surface: rgba(9, 16, 30, 0.82);
-  --surface-strong: rgba(13, 24, 43, 0.94);
-  --border: rgba(172, 189, 223, 0.15);
-  --text-muted: #a9b7d3;
-  --accent: #78d5ff;
-  --accent-strong: #4fc8ff;
-  --success: #4de3a0;
-  --danger: #ff7a7a;
-  --shadow: 0 25px 80px rgba(0, 0, 0, 0.38);
+  --surface: rgba(255, 251, 245, 0.82);
+  --surface-strong: rgba(255, 255, 255, 0.96);
+  --border: rgba(99, 79, 48, 0.12);
+  --text-muted: #6f665a;
+  --accent: #b96820;
+  --accent-strong: #d17824;
+  --success: #2f8f62;
+  --danger: #b55252;
+  --shadow: 0 22px 60px rgba(90, 67, 40, 0.12);
 }
 
 * {
@@ -128,14 +128,14 @@ h1 {
 }
 
 .primary-button {
-  color: #04101d;
-  background: linear-gradient(135deg, #8ae4ff, #79f0be);
+  color: #fffaf2;
+  background: linear-gradient(135deg, #c96f1a, #e2a24a);
 }
 
 .secondary-button {
-  color: #f5f7fb;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #2b2116;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(99, 79, 48, 0.12);
 }
 
 .ghost-button {
@@ -307,17 +307,17 @@ h1 {
 
 .text-input {
   width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(99, 79, 48, 0.16);
   border-radius: 16px;
-  background: rgba(7, 14, 26, 0.72);
-  color: #f5f7fb;
+  background: rgba(255, 255, 255, 0.88);
+  color: #1d2430;
   padding: 13px 14px;
   outline: none;
 }
 
 .text-input:focus {
-  border-color: rgba(120, 213, 255, 0.65);
-  box-shadow: 0 0 0 4px rgba(120, 213, 255, 0.14);
+  border-color: rgba(185, 104, 32, 0.7);
+  box-shadow: 0 0 0 4px rgba(185, 104, 32, 0.12);
 }
 
 .file-input {
@@ -519,9 +519,9 @@ h1 {
 
 .answer-button {
   text-align: left;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  background: rgba(255, 255, 255, 0.03);
-  color: #f5f7fb;
+  border: 1px solid rgba(99, 79, 48, 0.12);
+  background: rgba(255, 255, 255, 0.76);
+  color: #1d2430;
   border-radius: 18px;
   padding: 14px 16px;
   transition: border-color 180ms ease, transform 180ms ease, background-color 180ms ease;
@@ -529,12 +529,12 @@ h1 {
 
 .answer-button:hover {
   transform: translateY(-1px);
-  border-color: rgba(120, 213, 255, 0.5);
+  border-color: rgba(185, 104, 32, 0.45);
 }
 
 .answer-button.selected {
-  border-color: rgba(120, 213, 255, 0.8);
-  background: rgba(120, 213, 255, 0.12);
+  border-color: rgba(185, 104, 32, 0.85);
+  background: rgba(185, 104, 32, 0.12);
 }
 
 .summary-grid {
@@ -551,7 +551,7 @@ h1 {
 }
 
 .summary-card.highlight {
-  background: linear-gradient(145deg, rgba(120, 213, 255, 0.16), rgba(79, 226, 160, 0.12));
+  background: linear-gradient(145deg, rgba(255, 214, 170, 0.32), rgba(226, 162, 74, 0.16));
 }
 
 .review-card {
@@ -559,11 +559,11 @@ h1 {
 }
 
 .review-card.correct {
-  border-color: rgba(77, 227, 160, 0.26);
+  border-color: rgba(47, 143, 98, 0.28);
 }
 
 .review-card.incorrect {
-  border-color: rgba(255, 122, 122, 0.26);
+  border-color: rgba(181, 82, 82, 0.28);
 }
 
 .review-header {
