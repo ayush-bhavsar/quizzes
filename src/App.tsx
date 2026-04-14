@@ -31,6 +31,7 @@ type ResultEntry = {
 };
 
 type Phase = 'builder' | 'quiz' | 'summary';
+type InputMode = 'manual' | 'csv' | 'gemini-file';
 
 type ImportRow = Record<string, unknown>;
 
@@ -55,6 +56,8 @@ type GeminiApiResponse = {
 };
 
 const GEMINI_KEY_STORAGE = 'quizzes.geminiApiKey';
+
+const GEMINI_SUPPORTED_FILE_HINT = 'Upload a JPG, PNG, WEBP, or PDF file.';
 
 const importedHeaders = {
   prompt: ['prompt', 'question', 'quiz question', 'question prompt'],
@@ -408,9 +411,35 @@ const parseQuestionsFromGeminiText = (value: string) => {
   }
 };
 
+const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+};
+
+const getGeminiMimeType = (file: File) => {
+  if (file.type.startsWith('image/')) {
+    return file.type;
+  }
+
+  if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+    return 'application/pdf';
+  }
+
+  return '';
+};
+
 function App() {
   const [questions, setQuestions] = useState<QuestionDraft[]>([createBlankQuestion()]);
   const [phase, setPhase] = useState<Phase>('builder');
+  const [inputMode, setInputMode] = useState<InputMode>('manual');
   const [quiz, setQuiz] = useState<QuizQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState('');
@@ -428,8 +457,10 @@ function App() {
     return window.localStorage.getItem(GEMINI_KEY_STORAGE) ?? '';
   });
   const [geminiPrompt, setGeminiPrompt] = useState('');
+  const [geminiFile, setGeminiFile] = useState<File | null>(null);
   const [isGeneratingWithGemini, setIsGeneratingWithGemini] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvFileInputRef = useRef<HTMLInputElement>(null);
+  const geminiFileInputRef = useRef<HTMLInputElement>(null);
 
   const currentQuestion = quiz[currentIndex];
   const totalQuestions = quiz.length;
@@ -497,8 +528,12 @@ function App() {
     setError('');
   };
 
-  const openImportDialog = () => {
-    fileInputRef.current?.click();
+  const openCsvImportDialog = () => {
+    csvFileInputRef.current?.click();
+  };
+
+  const openGeminiFileDialog = () => {
+    geminiFileInputRef.current?.click();
   };
 
   const togglePattern = (type: QuestionType) => {
@@ -573,20 +608,46 @@ function App() {
     }
   };
 
-  const generateQuizFromGemini = async () => {
+  const pickGeminiFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    const mimeType = getGeminiMimeType(file);
+    if (!mimeType) {
+      setGeminiFile(null);
+      setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
+      return;
+    }
+
+    setGeminiFile(file);
+    setError('');
+  };
+
+  const generateQuizFromGeminiFile = async () => {
     if (!geminiApiKey.trim()) {
       setError('Add your Gemini API key before generating quiz questions.');
       return;
     }
 
-    if (!geminiPrompt.trim()) {
-      setError('Paste your raw questions before using Gemini formatting.');
+    if (!geminiFile) {
+      setError(`Choose an image or PDF before using Gemini. ${GEMINI_SUPPORTED_FILE_HINT}`);
+      return;
+    }
+
+    const mimeType = getGeminiMimeType(geminiFile);
+    if (!mimeType) {
+      setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
 
     setIsGeneratingWithGemini(true);
 
     try {
+      const fileData = arrayBufferToBase64(await geminiFile.arrayBuffer());
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(geminiApiKey.trim())}`,
         {
@@ -600,19 +661,26 @@ function App() {
                 parts: [
                   {
                     text: [
-                      'You are a quiz formatter.',
-                      'Convert ONLY the user-provided questions into quiz rows. Do not create new questions.',
+                      'You are a quiz generator for student practice tests.',
+                      'Read the uploaded image or PDF and extract questions from it.',
+                      'Convert ONLY extracted questions into quiz rows. Do not create unrelated questions.',
                       'Return JSON only with either an array of objects or {"questions": []}.',
                       'Allowed types: multiple-choice, fill-up, true-false.',
                       'Each object should use fields: prompt, type, option1, option2, option3, option4, correctAnswer, correctIndex.',
-                      'Infer type from the user text: MCQ with choices => multiple-choice, true/false statements => true-false, otherwise fill-up.',
+                      'Infer type from extracted text: MCQ with choices => multiple-choice, true/false statements => true-false, otherwise fill-up.',
                       'For true-false, use correctAnswer as True or False.',
                       'For fill-up, provide prompt and correctAnswer.',
                       'Extract answers from markers like Answer:, Correct:, Ans:, ->, or inline answer hints when present.',
                       'If a question has no reliable answer, skip that question instead of guessing.',
                       'Do not include markdown, comments, or extra keys.',
-                      `User input: ${geminiPrompt}`,
+                      geminiPrompt.trim() ? `Extra user instruction: ${geminiPrompt.trim()}` : 'No extra user instruction.',
                     ].join('\n'),
+                  },
+                  {
+                    inlineData: {
+                      mimeType,
+                      data: fileData,
+                    },
                   },
                 ],
               },
@@ -644,16 +712,17 @@ function App() {
       const generatedQuestions = parseQuestionsFromGeminiText(modelText);
 
       if (!generatedQuestions.length) {
-        setError('Could not extract valid questions from your text. Include clear answers like "Answer: ..." for each question and try again.');
+        setError('Could not extract valid questions from the uploaded file. Ensure each question includes a clear answer and try another image/PDF.');
         return;
       }
 
       setQuestions(generatedQuestions);
       setBulkInput('');
+      setGeminiFile(null);
       setError('');
       startQuiz(generatedQuestions);
     } catch {
-      setError('Could not generate questions with Gemini. Check network access and response format.');
+      setError('Could not generate questions with Gemini. Check network access, file quality, and response format.');
     } finally {
       setIsGeneratingWithGemini(false);
     }
@@ -703,18 +772,27 @@ function App() {
           <p className="eyebrow">quizzes</p>
           <h1>Turn your questions into a playable quiz in seconds.</h1>
           <p className="hero-description">
-            Add your questions, mark the correct answer, and generate an interactive quiz with scoring and review.
+            Choose how to build your quiz: manual questions, CSV import, or Gemini extraction from photo/PDF.
           </p>
           <div className="hero-actions">
-            <button className="primary-button" onClick={addQuestion} type="button">
-              Add question
-            </button>
-            <button className="secondary-button" onClick={openImportDialog} type="button">
-              {isImporting ? 'Importing...' : 'Import CSV / Excel'}
-            </button>
             <button className="secondary-button" onClick={loadSampleQuiz} type="button">
               Load sample quiz
             </button>
+            {inputMode === 'manual' ? (
+              <button className="primary-button" onClick={addQuestion} type="button">
+                Add question
+              </button>
+            ) : null}
+            {inputMode === 'csv' ? (
+              <button className="secondary-button" onClick={openCsvImportDialog} type="button">
+                {isImporting ? 'Importing...' : 'Import CSV / Excel'}
+              </button>
+            ) : null}
+            {inputMode === 'gemini-file' ? (
+              <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
+                {geminiFile ? `Selected: ${geminiFile.name}` : 'Select photo / PDF'}
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -751,71 +829,108 @@ function App() {
               </button>
             </div>
 
-            <div className="bulk-entry-card">
-              <label className="field-label" htmlFor="bulk-quiz-input">
-                Paste CSV text (prompt, type, option1 to option4, correctAnswer, correctIndex)
+            <div className="source-mode-row">
+              <label className="field-label" htmlFor="source-mode">
+                Question source mode
               </label>
-              <textarea
-                id="bulk-quiz-input"
-                className="text-input bulk-textarea"
-                placeholder={
-                  'prompt,type,option1,option2,option3,option4,correctAnswer,correctIndex\nWhich planet is called the Red Planet?,multiple-choice,Earth,Mars,Jupiter,Venus,Mars,\nThe largest ocean is the ____ Ocean.,fill-up,,,,,Pacific,\nThe earth is flat.,true-false,,,,,False,'
-                }
-                value={bulkInput}
-                onChange={(event) => setBulkInput(event.target.value)}
-                rows={6}
-              />
-              <div className="bulk-actions">
-                <button className="secondary-button" onClick={importQuizFromText} type="button">
-                  Generate from text
-                </button>
-                <button className="ghost-button" onClick={() => setBulkInput('')} type="button">
-                  Clear text
-                </button>
-              </div>
-            </div>
-
-            <div className="ai-entry-card">
-              <label className="field-label" htmlFor="gemini-api-key">
-                Gemini API key
-              </label>
-              <input
-                id="gemini-api-key"
+              <select
+                id="source-mode"
                 className="text-input"
-                type="password"
-                placeholder="Paste your Gemini API key"
-                value={geminiApiKey}
-                onChange={(event) => updateGeminiApiKey(event.target.value)}
-              />
-
-              <label className="field-label" htmlFor="gemini-quiz-text">
-                Paste your questions (any pattern)
-              </label>
-              <textarea
-                id="gemini-quiz-text"
-                className="text-input gemini-textarea"
-                rows={5}
-                placeholder={
-                  'Example:\n1) Which planet is called the Red Planet?\nA) Earth B) Mars C) Jupiter D) Venus\nAnswer: Mars\n\n2) The largest ocean is the ____ Ocean.\nAns: Pacific\n\n3) The earth is flat. True or False\nCorrect: False'
-                }
-                value={geminiPrompt}
-                onChange={(event) => setGeminiPrompt(event.target.value)}
-              />
-
-              <div className="bulk-actions">
-                <button className="secondary-button" onClick={() => void generateQuizFromGemini()} type="button" disabled={isGeneratingWithGemini}>
-                  {isGeneratingWithGemini ? 'Formatting...' : 'Format questions with Gemini'}
-                </button>
-                <button className="ghost-button" onClick={() => setGeminiPrompt('')} type="button">
-                  Clear Gemini text
-                </button>
-              </div>
-              <p className="type-note">Gemini is used to map your raw question text into the required quiz structure. Your API key is saved only in browser local storage.</p>
+                value={inputMode}
+                onChange={(event) => {
+                  setInputMode(event.target.value as InputMode);
+                  setError('');
+                }}
+              >
+                <option value="manual">Manually frame questions one by one</option>
+                <option value="csv">CSV questions</option>
+                <option value="gemini-file">Generate questions from Gemini photo/PDF</option>
+              </select>
             </div>
 
-            <div className="question-list">
-              {questions.map((question, questionIndex) => (
-                <article className="question-card" key={question.id}>
+            {inputMode === 'csv' ? (
+              <div className="bulk-entry-card">
+                <label className="field-label" htmlFor="bulk-quiz-input">
+                  Paste CSV text (prompt, type, option1 to option4, correctAnswer, correctIndex)
+                </label>
+                <textarea
+                  id="bulk-quiz-input"
+                  className="text-input bulk-textarea"
+                  placeholder={
+                    'prompt,type,option1,option2,option3,option4,correctAnswer,correctIndex\nWhich planet is called the Red Planet?,multiple-choice,Earth,Mars,Jupiter,Venus,Mars,\nThe largest ocean is the ____ Ocean.,fill-up,,,,,Pacific,\nThe earth is flat.,true-false,,,,,False,'
+                  }
+                  value={bulkInput}
+                  onChange={(event) => setBulkInput(event.target.value)}
+                  rows={6}
+                />
+                <div className="bulk-actions">
+                  <button className="secondary-button" onClick={importQuizFromText} type="button">
+                    Generate from CSV text
+                  </button>
+                  <button className="secondary-button" onClick={openCsvImportDialog} type="button">
+                    {isImporting ? 'Importing...' : 'Upload CSV / Excel file'}
+                  </button>
+                  <button className="ghost-button" onClick={() => setBulkInput('')} type="button">
+                    Clear text
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {inputMode === 'gemini-file' ? (
+              <div className="ai-entry-card">
+                <label className="field-label" htmlFor="gemini-api-key">
+                  Gemini API key
+                </label>
+                <input
+                  id="gemini-api-key"
+                  className="text-input"
+                  type="password"
+                  placeholder="Paste your Gemini API key"
+                  value={geminiApiKey}
+                  onChange={(event) => updateGeminiApiKey(event.target.value)}
+                />
+
+                <label className="field-label" htmlFor="gemini-file-prompt">
+                  Optional extraction instructions
+                </label>
+                <textarea
+                  id="gemini-file-prompt"
+                  className="text-input gemini-textarea"
+                  rows={4}
+                  placeholder="Optional: tell Gemini to focus on specific sections, language, or question style."
+                  value={geminiPrompt}
+                  onChange={(event) => setGeminiPrompt(event.target.value)}
+                />
+
+                <div className="bulk-actions">
+                  <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
+                    {geminiFile ? `Selected: ${geminiFile.name}` : 'Choose photo or PDF'}
+                  </button>
+                  <button className="secondary-button" onClick={() => void generateQuizFromGeminiFile()} type="button" disabled={isGeneratingWithGemini}>
+                    {isGeneratingWithGemini ? 'Generating...' : 'Generate quiz from Gemini file'}
+                  </button>
+                  <button
+                    className="ghost-button"
+                    onClick={() => {
+                      setGeminiPrompt('');
+                      setGeminiFile(null);
+                    }}
+                    type="button"
+                  >
+                    Clear Gemini inputs
+                  </button>
+                </div>
+                <p className="type-note">
+                  Gemini reads your uploaded photo/PDF and returns quiz-ready questions. Your API key is saved only in browser local storage.
+                </p>
+              </div>
+            ) : null}
+
+            {inputMode === 'manual' ? (
+              <div className="question-list">
+                {questions.map((question, questionIndex) => (
+                  <article className="question-card" key={question.id}>
                   <div className="question-card-header">
                     <div>
                       <p className="question-index">Question {questionIndex + 1}</p>
@@ -916,9 +1031,10 @@ function App() {
                       {question.type === 'true-false' ? <p className="type-note">True / false questions use the fixed choices above.</p> : null}
                     </div>
                   )}
-                </article>
-              ))}
-            </div>
+                  </article>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <aside className="panel preview-panel">
@@ -961,6 +1077,7 @@ function App() {
                 </label>
               </div>
               <ul>
+                <li>Source mode dropdown for manual / CSV / Gemini</li>
                 <li>One question at a time</li>
                 <li>Instant score tracking</li>
                 <li>Review of correct and wrong answers</li>
@@ -975,11 +1092,20 @@ function App() {
             </button>
 
             <input
-              ref={fileInputRef}
+              ref={csvFileInputRef}
               accept=".csv,.xls,.xlsx"
               aria-label="Import quiz file"
               className="file-input"
               onChange={importQuizFile}
+              type="file"
+            />
+
+            <input
+              ref={geminiFileInputRef}
+              accept="image/*,.pdf"
+              aria-label="Upload photo or PDF for Gemini"
+              className="file-input"
+              onChange={pickGeminiFile}
               type="file"
             />
           </aside>

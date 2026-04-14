@@ -157,13 +157,13 @@ h1 {
 }
 
 .stats-grid {
-  drid-template-columns: repeat(3, minmax(0, 1fr));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   align-content: start;
   border-radius: 28px;
   padding: 18px;
-  width: 100%: 28px;
-  padding: 18px;
+  width: 100%;
 }
 
 .stat-card,
@@ -224,6 +224,12 @@ h1 {
 .review-list {
   display: grid;
   gap: 16px;
+}
+
+.source-mode-row {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 .bulk-entry-card {
@@ -465,10 +471,10 @@ h1 {
   gap: 12px;
   margin-bottom: 18px;
 }
-  flex: 1;
-  min-width: 150px;
 
 .summary-card {
+  flex: 1;
+  min-width: 150px;
   padding: 18px;
 }
 
