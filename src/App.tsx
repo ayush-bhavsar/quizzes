@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import Papa from 'papaparse';
 
 type QuestionType = 'multiple-choice' | 'fill-up' | 'true-false';
 
@@ -42,20 +43,15 @@ type QuizBuildResult = {
 
 type PatternSelection = Record<QuestionType, boolean>;
 
-type GeminiApiResponse = {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
-  }>;
-  error?: {
-    message?: string;
-  };
+type GeminiProxyResponse = {
+  text?: string;
+  error?: string;
 };
 
-const GEMINI_KEY_STORAGE = 'quizzes.geminiApiKey';
+type ParseCsvResult = {
+  data: ImportRow[];
+  errors: string[];
+};
 
 const GEMINI_SUPPORTED_FILE_HINT = 'Upload a JPG, PNG, WEBP, or PDF file.';
 
@@ -353,20 +349,105 @@ const defaultPatternSelection: PatternSelection = {
 const applyPatternFilter = (draftQuestions: QuestionDraft[], patternSelection: PatternSelection) =>
   draftQuestions.filter((question) => patternSelection[question.type]);
 
-const parseQuestionsFromWorkbook = (workbook: XLSX.WorkBook) => {
-  const sheetName = workbook.SheetNames[0];
+const parseQuestionsFromRows = (rows: ImportRow[]) =>
+  rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
 
-  if (!sheetName) {
+const parseCsvRows = (value: string): ParseCsvResult => {
+  const result = Papa.parse<ImportRow>(value, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header: string) => header.trim(),
+  });
+
+  return {
+    data: result.data.filter((row: ImportRow) => row && Object.keys(row).length > 0),
+    errors: result.errors.map((entry: Papa.ParseError) => entry.message),
+  };
+};
+
+const cellValueToText = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'object') {
+    const objectValue = value as Record<string, unknown>;
+
+    if (typeof objectValue.text === 'string') {
+      return objectValue.text.trim();
+    }
+
+    if (Array.isArray(objectValue.richText)) {
+      return objectValue.richText
+        .map((entry) => (typeof (entry as { text?: unknown }).text === 'string' ? String((entry as { text: string }).text) : ''))
+        .join('')
+        .trim();
+    }
+
+    if (objectValue.result !== undefined) {
+      return cellValueToText(objectValue.result);
+    }
+  }
+
+  return '';
+};
+
+const parseQuestionsFromXlsxBuffer = async (buffer: ArrayBuffer) => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
     return [];
   }
 
-  const worksheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json<ImportRow>(worksheet, { defval: '' });
-  return rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
-};
+  const headerRow = worksheet.getRow(1);
+  const headers: string[] = [];
 
-const parseQuestionsFromRows = (rows: ImportRow[]) =>
-  rows.map(createQuestionFromRow).filter((question): question is QuestionDraft => Boolean(question));
+  headerRow.eachCell({ includeEmpty: false }, (cell, columnNumber) => {
+    headers[columnNumber - 1] = cellValueToText(cell.value);
+  });
+
+  if (!headers.length) {
+    return [];
+  }
+
+  const rows: ImportRow[] = [];
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) {
+      return;
+    }
+
+    const record: ImportRow = {};
+    let hasValue = false;
+
+    headers.forEach((header, index) => {
+      if (!header) {
+        return;
+      }
+
+      const value = cellValueToText(row.getCell(index + 1).value);
+      record[header] = value;
+      if (value) {
+        hasValue = true;
+      }
+    });
+
+    if (hasValue) {
+      rows.push(record);
+    }
+  });
+
+  return parseQuestionsFromRows(rows);
+};
 
 const extractJsonSegment = (value: string) => {
   const fencedMatch = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -402,26 +483,9 @@ const parseQuestionsFromGeminiText = (value: string) => {
 
     return parseQuestionsFromRows(rows.filter((item): item is ImportRow => Boolean(item && typeof item === 'object')));
   } catch {
-    try {
-      const workbook = XLSX.read(value, { type: 'string' });
-      return parseQuestionsFromWorkbook(workbook);
-    } catch {
-      return [];
-    }
+    const csv = parseCsvRows(value);
+    return parseQuestionsFromRows(csv.data);
   }
-};
-
-const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-
-  return btoa(binary);
 };
 
 const getGeminiMimeType = (file: File) => {
@@ -449,13 +513,6 @@ function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
   const [patternSelection, setPatternSelection] = useState<PatternSelection>(defaultPatternSelection);
-  const [geminiApiKey, setGeminiApiKey] = useState(() => {
-    if (typeof window === 'undefined') {
-      return '';
-    }
-
-    return window.localStorage.getItem(GEMINI_KEY_STORAGE) ?? '';
-  });
   const [geminiPrompt, setGeminiPrompt] = useState('');
   const [geminiFile, setGeminiFile] = useState<File | null>(null);
   const [isGeneratingWithGemini, setIsGeneratingWithGemini] = useState(false);
@@ -550,8 +607,8 @@ function App() {
     }
 
     try {
-      const workbook = XLSX.read(bulkInput, { type: 'string' });
-      const importedQuestions = parseQuestionsFromWorkbook(workbook);
+      const parsed = parseCsvRows(bulkInput);
+      const importedQuestions = parseQuestionsFromRows(parsed.data);
 
       if (!importedQuestions.length) {
         setError('No valid questions were found in the pasted text. Check headers and row values.');
@@ -577,10 +634,19 @@ function App() {
 
     try {
       const isCsv = file.name.toLowerCase().endsWith('.csv');
-      const workbook = isCsv
-        ? XLSX.read(await file.text(), { type: 'string' })
-        : XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      const importedQuestions = parseQuestionsFromWorkbook(workbook);
+      const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+
+      let importedQuestions: QuestionDraft[] = [];
+
+      if (isCsv) {
+        const parsed = parseCsvRows(await file.text());
+        importedQuestions = parseQuestionsFromRows(parsed.data);
+      } else if (isXlsx) {
+        importedQuestions = await parseQuestionsFromXlsxBuffer(await file.arrayBuffer());
+      } else {
+        setError('Could not read that file. Use a CSV or XLSX file with supported question columns.');
+        return;
+      }
 
       if (!importedQuestions.length) {
         setError('No valid questions were found. Make sure your file includes prompt and answer columns.');
@@ -590,21 +656,9 @@ function App() {
       setQuestions(importedQuestions);
       startQuiz(importedQuestions);
     } catch {
-      setError('Could not read that file. Use a CSV, XLS, or XLSX file with supported question columns.');
+      setError('Could not read that file. Use a CSV or XLSX file with supported question columns.');
     } finally {
       setIsImporting(false);
-    }
-  };
-
-  const updateGeminiApiKey = (value: string) => {
-    setGeminiApiKey(value);
-
-    if (typeof window !== 'undefined') {
-      if (value.trim()) {
-        window.localStorage.setItem(GEMINI_KEY_STORAGE, value.trim());
-      } else {
-        window.localStorage.removeItem(GEMINI_KEY_STORAGE);
-      }
     }
   };
 
@@ -628,11 +682,6 @@ function App() {
   };
 
   const generateQuizFromGeminiFile = async () => {
-    if (!geminiApiKey.trim()) {
-      setError('Add your Gemini API key before generating quiz questions.');
-      return;
-    }
-
     if (!geminiFile) {
       setError(`Choose an image or PDF before using Gemini. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
@@ -647,65 +696,27 @@ function App() {
     setIsGeneratingWithGemini(true);
 
     try {
-      const fileData = arrayBufferToBase64(await geminiFile.arrayBuffer());
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(geminiApiKey.trim())}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: [
-                      'You are a quiz generator for student practice tests.',
-                      'Read the uploaded image or PDF and extract questions from it.',
-                      'Convert ONLY extracted questions into quiz rows. Do not create unrelated questions.',
-                      'Return JSON only with either an array of objects or {"questions": []}.',
-                      'Allowed types: multiple-choice, fill-up, true-false.',
-                      'Each object should use fields: prompt, type, option1, option2, option3, option4, correctAnswer, correctIndex.',
-                      'Infer type from extracted text: MCQ with choices => multiple-choice, true/false statements => true-false, otherwise fill-up.',
-                      'For true-false, use correctAnswer as True or False.',
-                      'For fill-up, provide prompt and correctAnswer.',
-                      'Extract answers from markers like Answer:, Correct:, Ans:, ->, or inline answer hints when present.',
-                      'If a question has no reliable answer, skip that question instead of guessing.',
-                      'Do not include markdown, comments, or extra keys.',
-                      geminiPrompt.trim() ? `Extra user instruction: ${geminiPrompt.trim()}` : 'No extra user instruction.',
-                    ].join('\n'),
-                  },
-                  {
-                    inlineData: {
-                      mimeType,
-                      data: fileData,
-                    },
-                  },
-                ],
-              },
-            ],
-          }),
-        },
-      );
+      const formData = new FormData();
+      formData.append('file', geminiFile);
+      formData.append('prompt', geminiPrompt);
 
-      const payload = (await response.json()) as GeminiApiResponse;
+      const response = await fetch('/api/gemini/quiz-from-file', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const payload = (await response.json()) as GeminiProxyResponse;
 
       if (!response.ok) {
-        const message = payload.error?.message ?? 'Gemini request failed. Check your API key and try again.';
+        const message = payload.error ?? 'Gemini request failed. Please try again.';
         setError(message);
         return;
       }
 
-      const modelText =
-        payload.candidates
-          ?.flatMap((candidate) => candidate.content?.parts ?? [])
-          .map((part) => part.text ?? '')
-          .join('\n')
-          .trim() ?? '';
+      const modelText = payload.text?.trim() ?? '';
 
       if (!modelText) {
-        setError('Gemini returned an empty response. Please try with more detailed quiz text.');
+        setError('Gemini returned an empty response. Please try another file or instruction.');
         return;
       }
 
@@ -879,18 +890,6 @@ function App() {
 
             {inputMode === 'gemini-file' ? (
               <div className="ai-entry-card">
-                <label className="field-label" htmlFor="gemini-api-key">
-                  Gemini API key
-                </label>
-                <input
-                  id="gemini-api-key"
-                  className="text-input"
-                  type="password"
-                  placeholder="Paste your Gemini API key"
-                  value={geminiApiKey}
-                  onChange={(event) => updateGeminiApiKey(event.target.value)}
-                />
-
                 <label className="field-label" htmlFor="gemini-file-prompt">
                   Optional extraction instructions
                 </label>
@@ -922,7 +921,7 @@ function App() {
                   </button>
                 </div>
                 <p className="type-note">
-                  Gemini reads your uploaded photo/PDF and returns quiz-ready questions. Your API key is saved only in browser local storage.
+                  Gemini reads your uploaded photo/PDF through a secure backend endpoint. Configure GEMINI_API_KEY in your server env file.
                 </p>
               </div>
             ) : null}
@@ -1083,7 +1082,7 @@ function App() {
                 <li>Review of correct and wrong answers</li>
               </ul>
               <p className="type-note">
-                Import files with columns like prompt, type, option1 to option4, correctAnswer, or correctIndex.
+                Import CSV/XLSX files with columns like prompt, type, option1 to option4, correctAnswer, or correctIndex.
               </p>
             </div>
 
@@ -1093,7 +1092,7 @@ function App() {
 
             <input
               ref={csvFileInputRef}
-              accept=".csv,.xls,.xlsx"
+              accept=".csv,.xlsx"
               aria-label="Import quiz file"
               className="file-input"
               onChange={importQuizFile}
