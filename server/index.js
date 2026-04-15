@@ -34,28 +34,47 @@ app.get('/api/health', (_request, response) => {
   response.json({ ok: true });
 });
 
-app.post('/api/gemini/quiz-from-file', upload.single('file'), async (request, response) => {
+app.post('/api/gemini/quiz-from-file', upload.any(), async (request, response) => {
   const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
   if (!geminiApiKey) {
     response.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' });
     return;
   }
 
-  const file = request.file;
-  if (!file) {
+  const files = Array.isArray(request.files)
+    ? request.files.filter((file) => file.fieldname === 'files' || file.fieldname === 'file')
+    : [];
+  if (!files.length) {
     response.status(400).json({ error: 'Missing file upload.' });
     return;
   }
 
-  const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
-  const isImage = file.mimetype.startsWith('image/');
-  if (!isPdf && !isImage) {
-    response.status(400).json({ error: 'Unsupported file type. Upload an image or PDF.' });
+  const invalidFile = files.find((file) => {
+    const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
+    const isImage = file.mimetype.startsWith('image/');
+    return !isPdf && !isImage;
+  });
+
+  if (invalidFile) {
+    response.status(400).json({ error: 'Unsupported file type. Upload images or PDFs only.' });
     return;
   }
-
-  const mimeType = isPdf ? 'application/pdf' : file.mimetype;
   const extraInstruction = typeof request.body.prompt === 'string' ? request.body.prompt : '';
+
+  const parts = [
+    {
+      text: toGeminiTextPrompt(extraInstruction),
+    },
+    ...files.map((file) => {
+      const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
+      return {
+        inlineData: {
+          mimeType: isPdf ? 'application/pdf' : file.mimetype,
+          data: file.buffer.toString('base64'),
+        },
+      };
+    }),
+  ];
 
   try {
     const geminiResponse = await fetch(
@@ -68,17 +87,7 @@ app.post('/api/gemini/quiz-from-file', upload.single('file'), async (request, re
         body: JSON.stringify({
           contents: [
             {
-              parts: [
-                {
-                  text: toGeminiTextPrompt(extraInstruction),
-                },
-                {
-                  inlineData: {
-                    mimeType,
-                    data: file.buffer.toString('base64'),
-                  },
-                },
-              ],
+              parts,
             },
           ],
         }),
@@ -110,6 +119,20 @@ app.post('/api/gemini/quiz-from-file', upload.single('file'), async (request, re
   } catch {
     response.status(500).json({ error: 'Could not process the file with Gemini.' });
   }
+});
+
+app.use((error, _request, response, _next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      response.status(413).json({ error: 'Uploaded files are too large. Reduce the number or size of images and try again.' });
+      return;
+    }
+
+    response.status(400).json({ error: error.message || 'Upload failed.' });
+    return;
+  }
+
+  response.status(500).json({ error: error?.message || 'Server error while processing Gemini upload.' });
 });
 
 app.listen(port, () => {

@@ -515,7 +515,7 @@ function App() {
   const [bulkInput, setBulkInput] = useState('');
   const [patternSelection, setPatternSelection] = useState<PatternSelection>(defaultPatternSelection);
   const [geminiPrompt, setGeminiPrompt] = useState('');
-  const [geminiFile, setGeminiFile] = useState<File | null>(null);
+  const [geminiFiles, setGeminiFiles] = useState<File[]>([]);
   const [isGeneratingWithGemini, setIsGeneratingWithGemini] = useState(false);
   const csvFileInputRef = useRef<HTMLInputElement>(null);
   const geminiFileInputRef = useRef<HTMLInputElement>(null);
@@ -523,6 +523,12 @@ function App() {
   const currentQuestion = quiz[currentIndex];
   const totalQuestions = quiz.length;
   const progress = totalQuestions > 0 ? ((currentIndex + (phase === 'summary' ? 1 : 0)) / totalQuestions) * 100 : 0;
+  const geminiSelectionLabel =
+    geminiFiles.length === 0
+      ? 'Choose images or PDF'
+      : geminiFiles.length === 1
+        ? `Selected: ${geminiFiles[0].name}`
+        : `Selected: ${geminiFiles.length} files`;
 
   const readyQuestions = useMemo(
     () => questions.filter((question) => question.prompt.trim().length > 0),
@@ -678,32 +684,32 @@ function App() {
   };
 
   const pickGeminiFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
+    const files = Array.from(event.target.files ?? []);
     event.target.value = '';
 
-    if (!file) {
+    if (!files.length) {
       return;
     }
 
-    const mimeType = getGeminiMimeType(file);
-    if (!mimeType) {
-      setGeminiFile(null);
+    const invalidFile = files.find((file) => !getGeminiMimeType(file));
+    if (invalidFile) {
+      setGeminiFiles([]);
       setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
 
-    setGeminiFile(file);
+    setGeminiFiles(files);
     setError('');
   };
 
   const generateQuizFromGeminiFile = async () => {
-    if (!geminiFile) {
+    if (!geminiFiles.length) {
       setError(`Choose an image or PDF before using Gemini. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
 
-    const mimeType = getGeminiMimeType(geminiFile);
-    if (!mimeType) {
+    const invalidFile = geminiFiles.find((file) => !getGeminiMimeType(file));
+    if (invalidFile) {
       setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
@@ -712,7 +718,9 @@ function App() {
 
     try {
       const formData = new FormData();
-      formData.append('file', geminiFile);
+      geminiFiles.forEach((file) => {
+        formData.append('files', file);
+      });
       formData.append('prompt', geminiPrompt);
 
       const response = await fetch('/api/gemini/quiz-from-file', {
@@ -720,15 +728,24 @@ function App() {
         body: formData,
       });
 
-      const payload = (await response.json()) as GeminiProxyResponse;
+      const responseText = await response.text();
+      let payload: GeminiProxyResponse | null = null;
+
+      if (responseText.trim()) {
+        try {
+          payload = JSON.parse(responseText) as GeminiProxyResponse;
+        } catch {
+          payload = null;
+        }
+      }
 
       if (!response.ok) {
-        const message = payload.error ?? 'Gemini request failed. Please try again.';
+        const message = payload?.error ?? responseText.trim() ?? 'Gemini request failed. Please try again.';
         setError(message);
         return;
       }
 
-      const modelText = payload.text?.trim() ?? '';
+      const modelText = payload?.text?.trim() ?? '';
 
       if (!modelText) {
         setError('Gemini returned an empty response. Please try another file or instruction.');
@@ -744,7 +761,7 @@ function App() {
 
       setQuestions(generatedQuestions);
       setBulkInput('');
-      setGeminiFile(null);
+      setGeminiFiles([]);
       setError('');
       startQuiz(generatedQuestions);
     } catch {
@@ -889,7 +906,7 @@ function App() {
 
             <div className="bulk-actions">
               <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
-                {geminiFile ? `Selected: ${geminiFile.name}` : 'Choose photo or PDF'}
+                {geminiSelectionLabel}
               </button>
               <button className="secondary-button" onClick={() => void generateQuizFromGeminiFile()} type="button" disabled={isGeneratingWithGemini}>
                 {isGeneratingWithGemini ? 'Generating...' : 'Generate quiz from Gemini file'}
@@ -898,7 +915,7 @@ function App() {
                 className="ghost-button"
                 onClick={() => {
                   setGeminiPrompt('');
-                  setGeminiFile(null);
+                  setGeminiFiles([]);
                 }}
                 type="button"
               >
@@ -1136,6 +1153,7 @@ function App() {
           aria-label="Upload photo or PDF for Gemini"
           className="file-input"
           onChange={pickGeminiFile}
+          multiple
           type="file"
         />
       </aside>
@@ -1171,7 +1189,7 @@ function App() {
             ) : null}
             {inputMode === 'gemini-file' ? (
               <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
-                {geminiFile ? `Selected: ${geminiFile.name}` : 'Select photo / PDF'}
+                {geminiSelectionLabel}
               </button>
             ) : null}
           </div>
