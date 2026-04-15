@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import ExcelJS from 'exceljs';
 import Papa from 'papaparse';
@@ -510,11 +510,12 @@ function App() {
   const [score, setScore] = useState(0);
   const [results, setResults] = useState<ResultEntry[]>([]);
   const [error, setError] = useState('');
+  const [isEditorFullscreen, setIsEditorFullscreen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
   const [patternSelection, setPatternSelection] = useState<PatternSelection>(defaultPatternSelection);
   const [geminiPrompt, setGeminiPrompt] = useState('');
-  const [geminiFile, setGeminiFile] = useState<File | null>(null);
+  const [geminiFiles, setGeminiFiles] = useState<File[]>([]);
   const [isGeneratingWithGemini, setIsGeneratingWithGemini] = useState(false);
   const csvFileInputRef = useRef<HTMLInputElement>(null);
   const geminiFileInputRef = useRef<HTMLInputElement>(null);
@@ -522,6 +523,12 @@ function App() {
   const currentQuestion = quiz[currentIndex];
   const totalQuestions = quiz.length;
   const progress = totalQuestions > 0 ? ((currentIndex + (phase === 'summary' ? 1 : 0)) / totalQuestions) * 100 : 0;
+  const geminiSelectionLabel =
+    geminiFiles.length === 0
+      ? 'Choose images or PDF'
+      : geminiFiles.length === 1
+        ? `Selected: ${geminiFiles[0].name}`
+        : `Selected: ${geminiFiles.length} files`;
 
   const readyQuestions = useMemo(
     () => questions.filter((question) => question.prompt.trim().length > 0),
@@ -677,32 +684,32 @@ function App() {
   };
 
   const pickGeminiFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
+    const files = Array.from(event.target.files ?? []);
     event.target.value = '';
 
-    if (!file) {
+    if (!files.length) {
       return;
     }
 
-    const mimeType = getGeminiMimeType(file);
-    if (!mimeType) {
-      setGeminiFile(null);
+    const invalidFile = files.find((file) => !getGeminiMimeType(file));
+    if (invalidFile) {
+      setGeminiFiles([]);
       setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
 
-    setGeminiFile(file);
+    setGeminiFiles(files);
     setError('');
   };
 
   const generateQuizFromGeminiFile = async () => {
-    if (!geminiFile) {
+    if (!geminiFiles.length) {
       setError(`Choose an image or PDF before using Gemini. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
 
-    const mimeType = getGeminiMimeType(geminiFile);
-    if (!mimeType) {
+    const invalidFile = geminiFiles.find((file) => !getGeminiMimeType(file));
+    if (invalidFile) {
       setError(`Unsupported file type. ${GEMINI_SUPPORTED_FILE_HINT}`);
       return;
     }
@@ -711,7 +718,9 @@ function App() {
 
     try {
       const formData = new FormData();
-      formData.append('file', geminiFile);
+      geminiFiles.forEach((file) => {
+        formData.append('files', file);
+      });
       formData.append('prompt', geminiPrompt);
 
       const response = await fetch('/api/gemini/quiz-from-file', {
@@ -719,15 +728,24 @@ function App() {
         body: formData,
       });
 
-      const payload = (await response.json()) as GeminiProxyResponse;
+      const responseText = await response.text();
+      let payload: GeminiProxyResponse | null = null;
+
+      if (responseText.trim()) {
+        try {
+          payload = JSON.parse(responseText) as GeminiProxyResponse;
+        } catch {
+          payload = null;
+        }
+      }
 
       if (!response.ok) {
-        const message = payload.error ?? 'Gemini request failed. Please try again.';
+        const message = payload?.error ?? responseText.trim() ?? 'Gemini request failed. Please try again.';
         setError(message);
         return;
       }
 
-      const modelText = payload.text?.trim() ?? '';
+      const modelText = payload?.text?.trim() ?? '';
 
       if (!modelText) {
         setError('Gemini returned an empty response. Please try another file or instruction.');
@@ -743,7 +761,7 @@ function App() {
 
       setQuestions(generatedQuestions);
       setBulkInput('');
-      setGeminiFile(null);
+      setGeminiFiles([]);
       setError('');
       startQuiz(generatedQuestions);
     } catch {
@@ -790,9 +808,362 @@ function App() {
     setError('');
   };
 
+  const toggleEditorFullscreen = () => {
+    if (phase !== 'builder') {
+      return;
+    }
+
+    setIsEditorFullscreen((currentValue) => !currentValue);
+  };
+
+  useEffect(() => {
+    document.body.style.overflow = phase === 'builder' && isEditorFullscreen ? 'hidden' : '';
+
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isEditorFullscreen, phase]);
+
+  const builderPanel = (
+    <section className="content-grid split-pane editor-workspace">
+      <div className="panel builder-panel split-pane-main">
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">Question editor</p>
+            <h2>Write the quiz</h2>
+          </div>
+          <div className="panel-header-actions">
+            <button className="secondary-button" onClick={toggleEditorFullscreen} type="button">
+              {isEditorFullscreen ? 'Exit full editor' : 'Full editor view'}
+            </button>
+            <button className="secondary-button" onClick={() => startQuiz()} type="button">
+              Generate quiz
+            </button>
+          </div>
+        </div>
+
+        <div className="source-mode-row">
+          <label className="field-label" htmlFor="source-mode">
+            Question source mode
+          </label>
+          <select
+            id="source-mode"
+            className="text-input"
+            value={inputMode}
+            onChange={(event) => {
+              setInputMode(event.target.value as InputMode);
+              setError('');
+            }}
+          >
+            <option value="manual">Manually frame questions one by one</option>
+            <option value="csv">CSV questions</option>
+            <option value="gemini-file">Generate questions from Gemini photo/PDF</option>
+          </select>
+        </div>
+
+        {inputMode === 'csv' ? (
+          <div className="bulk-entry-card">
+            <label className="field-label" htmlFor="bulk-quiz-input">
+              Paste CSV text (prompt, type, option1 to option4, correctAnswer, correctIndex)
+            </label>
+            <textarea
+              id="bulk-quiz-input"
+              className="text-input bulk-textarea"
+              placeholder={
+                'prompt,type,option1,option2,option3,option4,correctAnswer,correctIndex\nWhich planet is called the Red Planet?,multiple-choice,Earth,Mars,Jupiter,Venus,Mars,\nThe largest ocean is the ____ Ocean.,fill-up,,,,,Pacific,\nThe earth is flat.,true-false,,,,,False,'
+              }
+              value={bulkInput}
+              onChange={(event) => setBulkInput(event.target.value)}
+              rows={6}
+            />
+            <div className="bulk-actions">
+              <button className="secondary-button" onClick={importQuizFromText} type="button">
+                Generate from CSV text
+              </button>
+              <button className="secondary-button" onClick={openCsvImportDialog} type="button">
+                {isImporting ? 'Importing...' : 'Upload CSV / Excel file'}
+              </button>
+              <button className="ghost-button" onClick={() => setBulkInput('')} type="button">
+                Clear text
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {inputMode === 'gemini-file' ? (
+          <div className="ai-entry-card">
+            <label className="field-label" htmlFor="gemini-file-prompt">
+              Optional extraction instructions
+            </label>
+            <textarea
+              id="gemini-file-prompt"
+              className="text-input gemini-textarea"
+              rows={4}
+              placeholder="Optional: tell Gemini to focus on specific sections, language, or question style."
+              value={geminiPrompt}
+              onChange={(event) => setGeminiPrompt(event.target.value)}
+            />
+
+            <div className="bulk-actions">
+              <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
+                {geminiSelectionLabel}
+              </button>
+              <button className="secondary-button" onClick={() => void generateQuizFromGeminiFile()} type="button" disabled={isGeneratingWithGemini}>
+                {isGeneratingWithGemini ? 'Generating...' : 'Generate quiz from Gemini file'}
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => {
+                  setGeminiPrompt('');
+                  setGeminiFiles([]);
+                }}
+                type="button"
+              >
+                Clear Gemini inputs
+              </button>
+            </div>
+            <p className="type-note">
+              Gemini reads your uploaded photo/PDF through a secure backend endpoint. Configure GEMINI_API_KEY in your server env file.
+            </p>
+          </div>
+        ) : null}
+
+        {inputMode === 'manual' ? (
+          <div className="question-list">
+            {questions.map((question, questionIndex) => (
+              <article className="question-card" key={question.id}>
+              <div className="question-card-header">
+                <div>
+                  <p className="question-index">Question {questionIndex + 1}</p>
+                  <label className="field-label" htmlFor={`prompt-${question.id}`}>
+                    Prompt
+                  </label>
+                </div>
+                <button className="ghost-button" onClick={() => removeQuestion(question.id)} type="button">
+                  Remove
+                </button>
+              </div>
+
+              <textarea
+                id={`prompt-${question.id}`}
+                className="text-input prompt-input"
+                placeholder="Type the question prompt"
+                value={question.prompt}
+                onChange={(event) =>
+                  updateQuestion(question.id, (currentQuestion) => ({
+                    ...currentQuestion,
+                    prompt: event.target.value,
+                  }))
+                }
+                rows={3}
+              />
+
+              <div className="question-type-row">
+                <label className="field-label" htmlFor={`type-${question.id}`}>
+                  Question type
+                </label>
+                <select
+                  id={`type-${question.id}`}
+                  className="text-input type-input"
+                  value={question.type}
+                  onChange={(event) => changeQuestionType(question.id, event.target.value as QuestionType)}
+                >
+                  <option value="multiple-choice">Multiple choice</option>
+                  <option value="fill-up">Fill up</option>
+                  <option value="true-false">True / false</option>
+                </select>
+              </div>
+
+              {question.type === 'fill-up' ? (
+                <div className="fillup-section">
+                  <label className="field-label" htmlFor={`fill-${question.id}`}>
+                    Correct answer
+                  </label>
+                  <input
+                    id={`fill-${question.id}`}
+                    className="text-input"
+                    placeholder="Type the accepted answer"
+                    value={question.correctText}
+                    onChange={(event) =>
+                      updateQuestion(question.id, (currentQuestion) => ({
+                        ...currentQuestion,
+                        correctText: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              ) : (
+                <div className="options-grid">
+                  {(question.type === 'true-false' ? question.options.slice(0, 2) : question.options).map((option, optionIndex) => (
+                    <label className="option-row" key={`${question.id}-${optionIndex}`}>
+                      <input
+                        checked={question.correctIndex === optionIndex}
+                        className="option-radio"
+                        name={`correct-${question.id}`}
+                        onChange={() =>
+                          updateQuestion(question.id, (currentQuestion) => ({
+                            ...currentQuestion,
+                            correctIndex: optionIndex,
+                          }))
+                        }
+                        type="radio"
+                      />
+                      <span className="option-number">{optionIndex + 1}</span>
+                      <input
+                        className="text-input option-input"
+                        disabled={question.type === 'true-false'}
+                        placeholder={question.type === 'true-false' ? (optionIndex === 0 ? 'True' : 'False') : `Answer option ${optionIndex + 1}`}
+                        value={option}
+                        onChange={(event) =>
+                          question.type === 'true-false'
+                            ? undefined
+                            : updateQuestion(question.id, (currentQuestion) => {
+                                const nextOptions = [...currentQuestion.options] as [string, string, string, string];
+                                nextOptions[optionIndex] = event.target.value;
+                                return {
+                                  ...currentQuestion,
+                                  options: nextOptions,
+                                };
+                              })
+                        }
+                      />
+                    </label>
+                  ))}
+                  {question.type === 'true-false' ? <p className="type-note">True / false questions use the fixed choices above.</p> : null}
+                </div>
+              )}
+              </article>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <aside className="panel preview-panel split-pane-side">
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">Live workspace</p>
+            <h2>Preview and stats</h2>
+          </div>
+        </div>
+
+        <div className="preview-card">
+          <p className="field-label">Current mode</p>
+          <h3>{modeLabelMap[inputMode]}</h3>
+          <p>{modeDescriptionMap[inputMode]}</p>
+        </div>
+
+        <div className="preview-card live-stat-grid" aria-label="Live quiz statistics">
+          <article className="preview-stat-item">
+            <span>Draft questions</span>
+            <strong>{questions.length}</strong>
+          </article>
+          <article className="preview-stat-item">
+            <span>Ready prompts</span>
+            <strong>{readyQuestions.length}</strong>
+          </article>
+          <article className="preview-stat-item">
+            <span>MCQ / Fill / T-F</span>
+            <strong>
+              {questions.filter((question) => question.type === 'multiple-choice').length}/
+              {questions.filter((question) => question.type === 'fill-up').length}/
+              {questions.filter((question) => question.type === 'true-false').length}
+            </strong>
+          </article>
+        </div>
+
+        <div className="preview-card">
+          <p className="field-label">Live quiz preview</p>
+          {livePreviewQuestions.length ? (
+            <div className="live-preview-list">
+              {livePreviewQuestions.map((question, index) => (
+                <article className="live-preview-item" key={`${question.id}-${index}`}>
+                  <p className="live-preview-meta">
+                    #{index + 1} • {question.type === 'fill-up' ? 'Fill up' : question.type === 'true-false' ? 'True / False' : 'Multiple choice'}
+                  </p>
+                  <p className="live-preview-prompt">{question.prompt}</p>
+                </article>
+              ))}
+              {readyQuestions.length > livePreviewQuestions.length ? (
+                <p className="type-note">+{readyQuestions.length - livePreviewQuestions.length} more ready questions</p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="type-note">No ready questions yet. Add prompts on the left to see the live quiz list here.</p>
+          )}
+        </div>
+
+        <div className="preview-card">
+          <p>
+            Generated quizzes are shuffled on launch, scored automatically, and shown with a final review screen.
+          </p>
+          <p className="field-label">Pattern selector</p>
+          <div className="pattern-grid" role="group" aria-label="Quiz pattern selector">
+            <label className="pattern-chip">
+              <input
+                type="checkbox"
+                checked={patternSelection['multiple-choice']}
+                onChange={() => togglePattern('multiple-choice')}
+              />
+              <span>MCQ</span>
+            </label>
+            <label className="pattern-chip">
+              <input
+                type="checkbox"
+                checked={patternSelection['fill-up']}
+                onChange={() => togglePattern('fill-up')}
+              />
+              <span>Fill ups</span>
+            </label>
+            <label className="pattern-chip">
+              <input
+                type="checkbox"
+                checked={patternSelection['true-false']}
+                onChange={() => togglePattern('true-false')}
+              />
+              <span>True / False</span>
+            </label>
+          </div>
+          <ul>
+            <li>Source mode dropdown for manual / CSV / Gemini</li>
+            <li>One question at a time</li>
+            <li>Instant score tracking</li>
+            <li>Review of correct and wrong answers</li>
+          </ul>
+          <p className="type-note">
+            Import CSV/XLSX files with columns like prompt, type, option1 to option4, correctAnswer, or correctIndex.
+          </p>
+        </div>
+
+        <button className="primary-button launch-button" onClick={() => startQuiz()} type="button">
+          Build my quiz
+        </button>
+
+        <input
+          ref={csvFileInputRef}
+          accept=".csv,.xlsx"
+          aria-label="Import quiz file"
+          className="file-input"
+          onChange={importQuizFile}
+          type="file"
+        />
+
+        <input
+          ref={geminiFileInputRef}
+          accept="image/*,.pdf"
+          aria-label="Upload photo or PDF for Gemini"
+          className="file-input"
+          onChange={pickGeminiFile}
+          multiple
+          type="file"
+        />
+      </aside>
+    </section>
+  );
+
   return (
-    <main className="app-shell">
-      <section className="hero-panel">
+    <main className={`app-shell ${isEditorFullscreen && phase === 'builder' ? 'app-shell-editor' : ''}`}>
+      {phase === 'builder' && !isEditorFullscreen ? (
+        <section className="hero-panel">
         <div className="hero-copy">
           <p className="eyebrow">quizzes</p>
           <h1>Turn your questions into a playable quiz in seconds.</h1>
@@ -802,6 +1173,9 @@ function App() {
           <div className="hero-actions">
             <button className="secondary-button" onClick={loadSampleQuiz} type="button">
               Load sample quiz
+            </button>
+            <button className="secondary-button" onClick={toggleEditorFullscreen} type="button">
+              Full editor view
             </button>
             {inputMode === 'manual' ? (
               <button className="primary-button" onClick={addQuestion} type="button">
@@ -815,12 +1189,11 @@ function App() {
             ) : null}
             {inputMode === 'gemini-file' ? (
               <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
-                {geminiFile ? `Selected: ${geminiFile.name}` : 'Select photo / PDF'}
+                {geminiSelectionLabel}
               </button>
             ) : null}
           </div>
         </div>
-
         <div className="stats-grid">
           <article className="stat-card">
             <span>Questions ready</span>
@@ -838,338 +1211,11 @@ function App() {
           </article>
         </div>
       </section>
+      ) : null}
 
       {error ? <p className="error-banner">{error}</p> : null}
 
-      {phase === 'builder' ? (
-        <section className="content-grid split-pane">
-          <div className="panel builder-panel split-pane-main">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Question editor</p>
-                <h2>Write the quiz</h2>
-              </div>
-              <button className="secondary-button" onClick={() => startQuiz()} type="button">
-                Generate quiz
-              </button>
-            </div>
-
-            <div className="source-mode-row">
-              <label className="field-label" htmlFor="source-mode">
-                Question source mode
-              </label>
-              <select
-                id="source-mode"
-                className="text-input"
-                value={inputMode}
-                onChange={(event) => {
-                  setInputMode(event.target.value as InputMode);
-                  setError('');
-                }}
-              >
-                <option value="manual">Manually frame questions one by one</option>
-                <option value="csv">CSV questions</option>
-                <option value="gemini-file">Generate questions from Gemini photo/PDF</option>
-              </select>
-            </div>
-
-            {inputMode === 'csv' ? (
-              <div className="bulk-entry-card">
-                <label className="field-label" htmlFor="bulk-quiz-input">
-                  Paste CSV text (prompt, type, option1 to option4, correctAnswer, correctIndex)
-                </label>
-                <textarea
-                  id="bulk-quiz-input"
-                  className="text-input bulk-textarea"
-                  placeholder={
-                    'prompt,type,option1,option2,option3,option4,correctAnswer,correctIndex\nWhich planet is called the Red Planet?,multiple-choice,Earth,Mars,Jupiter,Venus,Mars,\nThe largest ocean is the ____ Ocean.,fill-up,,,,,Pacific,\nThe earth is flat.,true-false,,,,,False,'
-                  }
-                  value={bulkInput}
-                  onChange={(event) => setBulkInput(event.target.value)}
-                  rows={6}
-                />
-                <div className="bulk-actions">
-                  <button className="secondary-button" onClick={importQuizFromText} type="button">
-                    Generate from CSV text
-                  </button>
-                  <button className="secondary-button" onClick={openCsvImportDialog} type="button">
-                    {isImporting ? 'Importing...' : 'Upload CSV / Excel file'}
-                  </button>
-                  <button className="ghost-button" onClick={() => setBulkInput('')} type="button">
-                    Clear text
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {inputMode === 'gemini-file' ? (
-              <div className="ai-entry-card">
-                <label className="field-label" htmlFor="gemini-file-prompt">
-                  Optional extraction instructions
-                </label>
-                <textarea
-                  id="gemini-file-prompt"
-                  className="text-input gemini-textarea"
-                  rows={4}
-                  placeholder="Optional: tell Gemini to focus on specific sections, language, or question style."
-                  value={geminiPrompt}
-                  onChange={(event) => setGeminiPrompt(event.target.value)}
-                />
-
-                <div className="bulk-actions">
-                  <button className="secondary-button" onClick={openGeminiFileDialog} type="button">
-                    {geminiFile ? `Selected: ${geminiFile.name}` : 'Choose photo or PDF'}
-                  </button>
-                  <button className="secondary-button" onClick={() => void generateQuizFromGeminiFile()} type="button" disabled={isGeneratingWithGemini}>
-                    {isGeneratingWithGemini ? 'Generating...' : 'Generate quiz from Gemini file'}
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={() => {
-                      setGeminiPrompt('');
-                      setGeminiFile(null);
-                    }}
-                    type="button"
-                  >
-                    Clear Gemini inputs
-                  </button>
-                </div>
-                <p className="type-note">
-                  Gemini reads your uploaded photo/PDF through a secure backend endpoint. Configure GEMINI_API_KEY in your server env file.
-                </p>
-              </div>
-            ) : null}
-
-            {inputMode === 'manual' ? (
-              <div className="question-list">
-                {questions.map((question, questionIndex) => (
-                  <article className="question-card" key={question.id}>
-                  <div className="question-card-header">
-                    <div>
-                      <p className="question-index">Question {questionIndex + 1}</p>
-                      <label className="field-label" htmlFor={`prompt-${question.id}`}>
-                        Prompt
-                      </label>
-                    </div>
-                    <button className="ghost-button" onClick={() => removeQuestion(question.id)} type="button">
-                      Remove
-                    </button>
-                  </div>
-
-                  <textarea
-                    id={`prompt-${question.id}`}
-                    className="text-input prompt-input"
-                    placeholder="Type the question prompt"
-                    value={question.prompt}
-                    onChange={(event) =>
-                      updateQuestion(question.id, (currentQuestion) => ({
-                        ...currentQuestion,
-                        prompt: event.target.value,
-                      }))
-                    }
-                    rows={3}
-                  />
-
-                  <div className="question-type-row">
-                    <label className="field-label" htmlFor={`type-${question.id}`}>
-                      Question type
-                    </label>
-                    <select
-                      id={`type-${question.id}`}
-                      className="text-input type-input"
-                      value={question.type}
-                      onChange={(event) => changeQuestionType(question.id, event.target.value as QuestionType)}
-                    >
-                      <option value="multiple-choice">Multiple choice</option>
-                      <option value="fill-up">Fill up</option>
-                      <option value="true-false">True / false</option>
-                    </select>
-                  </div>
-
-                  {question.type === 'fill-up' ? (
-                    <div className="fillup-section">
-                      <label className="field-label" htmlFor={`fill-${question.id}`}>
-                        Correct answer
-                      </label>
-                      <input
-                        id={`fill-${question.id}`}
-                        className="text-input"
-                        placeholder="Type the accepted answer"
-                        value={question.correctText}
-                        onChange={(event) =>
-                          updateQuestion(question.id, (currentQuestion) => ({
-                            ...currentQuestion,
-                            correctText: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                  ) : (
-                    <div className="options-grid">
-                      {(question.type === 'true-false' ? question.options.slice(0, 2) : question.options).map((option, optionIndex) => (
-                        <label className="option-row" key={`${question.id}-${optionIndex}`}>
-                          <input
-                            checked={question.correctIndex === optionIndex}
-                            className="option-radio"
-                            name={`correct-${question.id}`}
-                            onChange={() =>
-                              updateQuestion(question.id, (currentQuestion) => ({
-                                ...currentQuestion,
-                                correctIndex: optionIndex,
-                              }))
-                            }
-                            type="radio"
-                          />
-                          <span className="option-number">{optionIndex + 1}</span>
-                          <input
-                            className="text-input option-input"
-                            disabled={question.type === 'true-false'}
-                            placeholder={question.type === 'true-false' ? (optionIndex === 0 ? 'True' : 'False') : `Answer option ${optionIndex + 1}`}
-                            value={option}
-                            onChange={(event) =>
-                              question.type === 'true-false'
-                                ? undefined
-                                : updateQuestion(question.id, (currentQuestion) => {
-                                    const nextOptions = [...currentQuestion.options] as [string, string, string, string];
-                                    nextOptions[optionIndex] = event.target.value;
-                                    return {
-                                      ...currentQuestion,
-                                      options: nextOptions,
-                                    };
-                                  })
-                            }
-                          />
-                        </label>
-                      ))}
-                      {question.type === 'true-false' ? <p className="type-note">True / false questions use the fixed choices above.</p> : null}
-                    </div>
-                  )}
-                  </article>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <aside className="panel preview-panel split-pane-side">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Live workspace</p>
-                <h2>Preview and stats</h2>
-              </div>
-            </div>
-
-            <div className="preview-card">
-              <p className="field-label">Current mode</p>
-              <h3>{modeLabelMap[inputMode]}</h3>
-              <p>{modeDescriptionMap[inputMode]}</p>
-            </div>
-
-            <div className="preview-card live-stat-grid" aria-label="Live quiz statistics">
-              <article className="preview-stat-item">
-                <span>Draft questions</span>
-                <strong>{questions.length}</strong>
-              </article>
-              <article className="preview-stat-item">
-                <span>Ready prompts</span>
-                <strong>{readyQuestions.length}</strong>
-              </article>
-              <article className="preview-stat-item">
-                <span>MCQ / Fill / T-F</span>
-                <strong>
-                  {questions.filter((question) => question.type === 'multiple-choice').length}/
-                  {questions.filter((question) => question.type === 'fill-up').length}/
-                  {questions.filter((question) => question.type === 'true-false').length}
-                </strong>
-              </article>
-            </div>
-
-            <div className="preview-card">
-              <p className="field-label">Live quiz preview</p>
-              {livePreviewQuestions.length ? (
-                <div className="live-preview-list">
-                  {livePreviewQuestions.map((question, index) => (
-                    <article className="live-preview-item" key={`${question.id}-${index}`}>
-                      <p className="live-preview-meta">
-                        #{index + 1} • {question.type === 'fill-up' ? 'Fill up' : question.type === 'true-false' ? 'True / False' : 'Multiple choice'}
-                      </p>
-                      <p className="live-preview-prompt">{question.prompt}</p>
-                    </article>
-                  ))}
-                  {readyQuestions.length > livePreviewQuestions.length ? (
-                    <p className="type-note">+{readyQuestions.length - livePreviewQuestions.length} more ready questions</p>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="type-note">No ready questions yet. Add prompts on the left to see the live quiz list here.</p>
-              )}
-            </div>
-
-            <div className="preview-card">
-              <p>
-                Generated quizzes are shuffled on launch, scored automatically, and shown with a final review screen.
-              </p>
-              <p className="field-label">Pattern selector</p>
-              <div className="pattern-grid" role="group" aria-label="Quiz pattern selector">
-                <label className="pattern-chip">
-                  <input
-                    type="checkbox"
-                    checked={patternSelection['multiple-choice']}
-                    onChange={() => togglePattern('multiple-choice')}
-                  />
-                  <span>MCQ</span>
-                </label>
-                <label className="pattern-chip">
-                  <input
-                    type="checkbox"
-                    checked={patternSelection['fill-up']}
-                    onChange={() => togglePattern('fill-up')}
-                  />
-                  <span>Fill ups</span>
-                </label>
-                <label className="pattern-chip">
-                  <input
-                    type="checkbox"
-                    checked={patternSelection['true-false']}
-                    onChange={() => togglePattern('true-false')}
-                  />
-                  <span>True / False</span>
-                </label>
-              </div>
-              <ul>
-                <li>Source mode dropdown for manual / CSV / Gemini</li>
-                <li>One question at a time</li>
-                <li>Instant score tracking</li>
-                <li>Review of correct and wrong answers</li>
-              </ul>
-              <p className="type-note">
-                Import CSV/XLSX files with columns like prompt, type, option1 to option4, correctAnswer, or correctIndex.
-              </p>
-            </div>
-
-            <button className="primary-button launch-button" onClick={() => startQuiz()} type="button">
-              Build my quiz
-            </button>
-
-            <input
-              ref={csvFileInputRef}
-              accept=".csv,.xlsx"
-              aria-label="Import quiz file"
-              className="file-input"
-              onChange={importQuizFile}
-              type="file"
-            />
-
-            <input
-              ref={geminiFileInputRef}
-              accept="image/*,.pdf"
-              aria-label="Upload photo or PDF for Gemini"
-              className="file-input"
-              onChange={pickGeminiFile}
-              type="file"
-            />
-          </aside>
-        </section>
-      ) : null}
+      {phase === 'builder' ? (isEditorFullscreen ? <section className="editor-shell">{builderPanel}</section> : builderPanel) : null}
 
       {phase === 'quiz' && currentQuestion ? (
         <section className="quiz-stage panel">
